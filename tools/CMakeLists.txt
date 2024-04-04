@@ -20,6 +20,24 @@ target_link_libraries(audio-info
         ${PLATFORM_LIBRARIES})
 target_compile_options(audio-info PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
+add_executable(aac-info aac.cpp)
+set_target_properties(aac-info PROPERTIES CXX_STANDARD 17)
+target_link_libraries(aac-info
+        ${CMAKE_THREAD_LIBS_INIT}
+        fdk-aac
+        ${PLATFORM_LIBRARIES})
+target_sources(aac-info PRIVATE fdkaac_dec.cpp fdkaac_dec.h wavwriter.c wavwriter.h)
+target_compile_options(aac-info PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+
+add_executable(aac-enc enc_test.cpp)
+set_target_properties(aac-enc PROPERTIES CXX_STANDARD 17)
+target_link_libraries(aac-enc
+        ${CMAKE_THREAD_LIBS_INIT}
+        fdk-aac
+        ${PLATFORM_LIBRARIES})
+target_sources(aac-enc PRIVATE fdkaac_enc.cpp fdkaac_enc.h wavreader.c wavwriter.h)
+target_compile_options(aac-enc PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+
 add_executable(sunshinesvc sunshinesvc.cpp)
 set_target_properties(sunshinesvc PROPERTIES CXX_STANDARD 17)
 target_link_libraries(sunshinesvc

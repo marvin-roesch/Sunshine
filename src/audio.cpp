@@ -3,8 +3,11 @@
  * @brief todo
  */
 #include <thread>
+#include <iostream>
+#include <fstream>
 
 #include <opus/opus_multistream.h>
+#include <fdk-aac/aacenc_lib.h>
 
 #include "platform/common.h"
 
@@ -19,6 +22,11 @@ namespace audio {
   using namespace std::literals;
   using opus_t = util::safe_ptr<OpusMSEncoder, opus_multistream_encoder_destroy>;
   using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<std::int16_t>>>;
+  using aac_t = util::safe_ptr<AACENCODER, destroy_aac_encoder>;
+
+  void destroy_aac_encoder(HANDLE_AACENCODER phAacEncoder) {
+    aacEncClose(&phAacEncoder);
+  }
 
   struct audio_ctx_t {
     // We want to change the sink for the first stream only
@@ -103,6 +111,40 @@ namespace audio {
     // Encoding takes place on this thread
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
+    aac_t aac;
+    aacEncOpen(&aac, 0, stream->channelCount);
+    aacEncoder_SetParam(aac.get(), AACENC_TRANSMUX, 2 /* ADTS format */);
+    aacEncoder_SetParam(aac.get(), AACENC_AOT, 2 /*MPEG-4 AAC LC*/);
+    aacEncoder_SetParam(aac.get(), AACENC_SAMPLERATE, stream->sampleRate);
+    aacEncoder_SetParam(aac.get(), AACENC_BITRATE, stream->bitrate);
+    aacEncoder_SetParam(aac.get(), AACENC_AFTERBURNER, 1);
+    aacEncoder_SetParam(aac.get(), AACENC_CHANNELORDER, 1);
+    aacEncoder_SetParam(aac.get(), AACENC_SIGNALING_MODE, 0);
+
+    CHANNEL_MODE chMode =
+      MODE_INVALID;
+    switch (stream->channelCount) {
+    case 1:  chMode = MODE_1;          break;
+    case 2:  chMode = MODE_2;          break;
+    case 3:  chMode = MODE_1_2;        break;
+    case 4:  chMode = MODE_1_2_1;      break;
+    case 5:  chMode = MODE_1_2_2;      break;
+    case 6:  chMode = MODE_1_2_2_1;    break;
+    case 7:  chMode = MODE_6_1;        break;
+    case 8:  chMode = MODE_7_1_BACK;   break;
+    default:
+      chMode = MODE_INVALID;
+    }
+
+    aacEncoder_SetParam(aac.get(), AACENC_CHANNELMODE, chMode);
+
+    aacEncEncode(aac.get(), nullptr, nullptr, nullptr, nullptr);
+
+    AACENC_InfoStruct encInfo;
+    aacEncInfo(aac.get(), &encInfo);
+    BOOST_LOG(info) << "Channel count: " << stream->channelCount << " Sample rate: " << stream->sampleRate << "Hz Bitrate: " << stream->bitrate << "bps";
+    BOOST_LOG(info) << "Max output buffer size: " << encInfo.maxOutBufBytes << " Frame length: " << encInfo.frameLength;
+
     opus_t opus { opus_multistream_encoder_create(
       stream->sampleRate,
       stream->channelCount,
@@ -115,22 +157,82 @@ namespace audio {
     opus_multistream_encoder_ctl(opus.get(), OPUS_SET_BITRATE(stream->bitrate));
     opus_multistream_encoder_ctl(opus.get(), OPUS_SET_VBR(0));
 
+    char aacBuffer[1024 * 8];
+    INT aacInBufferIds[1] = {IN_AUDIO_DATA}, aacInBufSizes[1], aacInBufferElSizes[1] = {sizeof(short)};
+    INT aacOutBufferIds[1] = {OUT_BITSTREAM_DATA}, aacOutBufSizes[1] = {sizeof(aacBuffer)}, aacOutBufferElSizes[1] = {1};
+
+    void *pcmBufs[1], *aacBufs[1];
+    aacBufs[0] = aacBuffer;
+
+    AACENC_BufDesc inBufDesc = {
+      .numBufs = 1,
+      .bufs = pcmBufs,
+      .bufferIdentifiers = aacInBufferIds,
+      .bufSizes = aacInBufSizes,
+      .bufElSizes = aacInBufferElSizes,
+    };
+    AACENC_BufDesc outBufDesc = {
+      .numBufs = 1,
+      .bufs = aacBufs,
+      .bufferIdentifiers = aacOutBufferIds,
+      .bufSizes = aacOutBufSizes,
+      .bufElSizes = aacOutBufferElSizes,
+    };
+
+    AACENC_InArgs inargs = {0, 0};
+    AACENC_OutArgs outargs = {0};
+
+    std::ofstream out_aac("hello.aac", std::ios::binary);
+
     auto frame_size = config.packetDuration * stream->sampleRate / 1000;
     while (auto sample = samples->pop()) {
-      buffer_t packet { 1400 };
+      buffer_t packet { encInfo.maxOutBufBytes };
 
-      int bytes = opus_multistream_encode(opus.get(), sample->data(), frame_size, std::begin(packet), packet.size());
-      if (bytes < 0) {
-        BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
+      inargs.numInSamples = frame_size * stream->channelCount;
+      aacInBufSizes[0] = sample->size();
+      pcmBufs[0] = sample->data();
+
+      aacBufs[0] = std::begin(packet);
+      aacOutBufSizes[0] = packet.size();
+
+      // FFF14C00D16210A099
+      /*
+      * 111111111111
+      * 0
+      * 00
+      * 1
+      * 01
+      * 0011
+      * 0
+      * 000
+      * 0
+      * 000001101000101100010000100001010000010011001
+      */
+
+      AACENC_ERROR err = aacEncEncode(aac.get(), &inBufDesc, &outBufDesc, &inargs, &outargs);
+      if (err != AACENC_OK) {
+        BOOST_LOG(error) << "Couldn't encode AAC audio: 0x"sv << std::hex << err;
         packets->stop();
 
         return;
       }
+      int bytes = outargs.numOutBytes;
+
+      out_aac.write(reinterpret_cast<const char *>(std::begin(packet)), bytes);
+
+  //    int bytes = opus_multistream_encode(opus.get(), sample->data(), frame_size, std::begin(packet), packet.size());
+  //    if(bytes < 0) {
+  //      BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
+  //      packets->stop();
+  //
+  //      return;
+  //    }
 
       packet.fake_resize(bytes);
       packets->raise(channel_data, std::move(packet));
     }
-  }
+    out_aac.close();
+}
 
   void
   capture(safe::mail_t mail, config_t config, void *channel_data) {

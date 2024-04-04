@@ -108,6 +108,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/round_robin.h"
         "${CMAKE_SOURCE_DIR}/src/stat_trackers.h"
         "${CMAKE_SOURCE_DIR}/src/stat_trackers.cpp"
+        "${CMAKE_SOURCE_DIR}/src/wavwriter.c"
+        "${CMAKE_SOURCE_DIR}/src/wavwriter.h"
         ${PLATFORM_TARGET_FILES})
 
 if(NOT SUNSHINE_ASSETS_DIR_DEF)
@@ -134,6 +136,7 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${CMAKE_THREAD_LIBS_INIT}
         enet
         opus
+        fdk-aac
         ${FFMPEG_LIBRARIES}
         ${Boost_LIBRARIES}
         ${OPENSSL_LIBRARIES}
